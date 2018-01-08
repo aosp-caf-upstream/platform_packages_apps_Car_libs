@@ -18,7 +18,7 @@
 <!-- The whole line item is clickable and will handle the logic change and update the switch
  contained inside. We can't take the touch focus away from Switch due to how touch was handled in
  that widget -->
-<com.android.car.settings.common.InterceptTouchRelativeLayout
+<com.android.car.list.InterceptTouchRelativeLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     style="@style/LineItem" >
     <LinearLayout
@@ -27,6 +27,7 @@
         android:orientation="vertical"
         android:layout_centerVertical="true"
         android:layout_marginStart="@dimen/car_keyline_1"
+        android:layout_marginEnd="@dimen/car_keyline_3"
         android:layout_alignParentStart="true">
         <TextView
             android:id="@+id/title"
@@ -37,7 +38,7 @@
             android:id="@+id/desc"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/double_line_text_margin"
+            android:layout_marginTop="@dimen/car_padding_1"
             style="@style/CarBody2.SingleLine" />
     </LinearLayout>
     <Switch
@@ -51,5 +52,5 @@
         android:layout_alignParentBottom="true"
         android:background="@color/car_list_divider"
         android:layout_width="match_parent"
-        android:layout_height="@dimen/car_divider_height" />
-</com.android.car.settings.common.InterceptTouchRelativeLayout>
+        android:layout_height="@dimen/car_list_divider_height" />
+</com.android.car.list.InterceptTouchRelativeLayout>

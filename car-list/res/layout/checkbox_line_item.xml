@@ -14,14 +14,14 @@
      limitations under the License.
 -->
 
-<com.android.car.settings.common.InterceptTouchRelativeLayout
+<com.android.car.list.InterceptTouchRelativeLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    style="@style/LineItem" >
+    style="@style/LineItem.SingleLine" >
 
     <CheckBox
         android:id="@+id/checkbox"
-        android:layout_width="@dimen/stream_button_icon_size"
-        android:layout_height="@dimen/stream_button_icon_size"
+        android:layout_width="@dimen/car_primary_icon_size"
+        android:layout_height="@dimen/car_primary_icon_size"
         android:layout_marginStart="@dimen/car_keyline_1"
         android:button="@drawable/ic_check_box"
         android:layout_alignParentStart="true"
@@ -34,8 +34,8 @@
         android:layout_alignParentStart="true"
         android:layout_centerVertical="true"
         android:layout_marginStart="@dimen/car_keyline_3"
-        android:layout_marginEnd="@dimen/car_keyline_3"
-        style="@style/CarBody2.SingleLine"
+        android:layout_marginEnd="@dimen/car_keyline_1"
+        style="@style/CarBody1.SingleLine"
         android:gravity="center_vertical"/>
 
     <View
@@ -43,5 +43,6 @@
         android:layout_alignParentBottom="true"
         android:background="@color/car_list_divider"
         android:layout_width="match_parent"
+        android:layout_height="@dimen/car_list_divider_height" />
         android:layout_height="@dimen/car_divider_height" />
-</com.android.car.settings.common.InterceptTouchRelativeLayout>
+</com.android.car.list.InterceptTouchRelativeLayout>

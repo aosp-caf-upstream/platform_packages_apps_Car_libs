@@ -22,7 +22,6 @@ import android.annotation.CallSuper;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.content.Context;
-import android.support.car.widget.PagedListView;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.RecyclerView.ViewHolder;
 import android.view.View;
@@ -30,6 +29,8 @@ import android.view.ViewGroup;
 
 import java.lang.annotation.Retention;
 import java.util.ArrayList;
+
+import androidx.car.widget.PagedListView;
 
 /**
  * Renders all types of LineItem to a view to be displayed as a row in a list.
@@ -124,6 +125,9 @@ public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
         // with a password input window and a checkbox for show password or not.
         static final int PASSWORD_TYPE = 10;
 
+        // with one title, no underlying divider.
+        static final int SUBTITLE_TEXT_TYPE = 11;
+
         /**
          * Returns the LineItemType of this LineItem
          *
@@ -201,6 +205,8 @@ public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
                 return SpinnerLineItem.createViewHolder(parent);
             case LineItem.PASSWORD_TYPE:
                 return PasswordLineItem.createViewHolder(parent);
+            case LineItem.SUBTITLE_TEXT_TYPE:
+                return SubtitleTextLineItem.createViewHolder(parent);
             default:
                 throw new IllegalStateException("ViewType not supported: " + viewType);
         }
