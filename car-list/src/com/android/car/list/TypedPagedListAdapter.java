@@ -21,7 +21,6 @@ import static java.lang.annotation.RetentionPolicy.SOURCE;
 import android.annotation.CallSuper;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
-import android.content.Context;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.RecyclerView.ViewHolder;
 import android.view.View;
@@ -38,37 +37,66 @@ import androidx.car.widget.PagedListView;
 public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
         implements PagedListView.ItemCap {
 
-    private final Context mContext;
     private ArrayList<LineItem> mContentList;
 
     /**
-     * Constructor with an empty content list
-     *
-     * @param context program context
+     * Constructor instance of {@link TypedPagedListAdapter} with an empty content list
      */
-    public TypedPagedListAdapter(@NonNull Context context) {
-        this(context, new ArrayList<>());
+    public TypedPagedListAdapter() {
+        this(new ArrayList<>());
     }
 
     /**
-     * Constructor with a context and content list
+     * Constructor instance of {@link TypedPagedListAdapter} with content list
      *
-     * @param context program context
      * @param contentList what is contained in the adapter
      */
-    public TypedPagedListAdapter(@NonNull Context context, ArrayList<LineItem> contentList) {
-        mContext = context;
+    public TypedPagedListAdapter(ArrayList<LineItem> contentList) {
         mContentList = contentList;
     }
 
     /**
-     * Change current content list to new content list
+     * Sets current content list to new content list and calls
+     * {@link RecyclerView.Adapter#notifyDataSetChanged()}
      *
      * @param contentList New content list
      */
-    public void updateList(ArrayList<LineItem> contentList) {
+    public void setList(@NonNull ArrayList<LineItem> contentList) {
         mContentList = contentList;
         notifyDataSetChanged();
+    }
+
+    /**
+     * Adds all items to the content list at given index and calls
+     * {@link RecyclerView.Adapter#notifyDataSetChanged()}
+     *
+     * @param index index at which to insert the first element from the specified list
+     * @param lineItems list containing items to add
+     *
+     * @throws IndexOutOfBoundsException thrown when index is out of bounds
+     */
+    public void addAll(int index, @NonNull ArrayList<LineItem> lineItems) {
+        if (index < 0 || index > mContentList.size()) {
+            throw new IndexOutOfBoundsException(
+                    "Index: " + index + ", Size: " + mContentList.size());
+        }
+        mContentList.addAll(index, lineItems);
+        notifyDataSetChanged();
+    }
+
+    /**
+     * Removes an item from the content list at the given index and calls
+     * {@link RecyclerView.Adapter#notifyDataSetChanged()}
+     *
+     * @param index the index of the item to be removed
+     */
+    public void remove(int index) {
+        if (index >= mContentList.size()) {
+            throw  new IndexOutOfBoundsException(
+                    "Index: " + index + ", Size: " + mContentList.size());
+        }
+        mContentList.remove(index);
+        notifyItemRemoved(index);
     }
 
     /**
@@ -80,8 +108,10 @@ public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
 
     /**
      * Definition for items that are able to be inserted into the TypedPagedListAdapter
+     *
+     * @param <VH> viewHolder for use with {@link TypedPagedListAdapter}
      */
-    public static abstract class LineItem<VH extends ViewHolder> {
+    public abstract static class LineItem<VH extends RecyclerView.ViewHolder> {
         @Retention(SOURCE)
         @IntDef({TEXT_TYPE,
                 TOGGLE_TYPE,
@@ -92,7 +122,8 @@ public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
                 EDIT_TEXT_TYPE,
                 SINGLE_TEXT_TYPE,
                 SPINNER_TYPE,
-                PASSWORD_TYPE})
+                PASSWORD_TYPE,
+                ACTION_BUTTON_TYPE})
         public @interface LineItemType {}
 
         // with one title and one description
@@ -125,9 +156,8 @@ public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
         // with a password input window and a checkbox for show password or not.
         static final int PASSWORD_TYPE = 10;
 
-        // with one title, no underlying divider.
-        static final int SUBTITLE_TEXT_TYPE = 11;
-
+        // with one title, one description, a start icon, and an end action button with icon
+        static final int ACTION_BUTTON_TYPE = 11;
         /**
          * Returns the LineItemType of this LineItem
          *
@@ -205,8 +235,8 @@ public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
                 return SpinnerLineItem.createViewHolder(parent);
             case LineItem.PASSWORD_TYPE:
                 return PasswordLineItem.createViewHolder(parent);
-            case LineItem.SUBTITLE_TEXT_TYPE:
-                return SubtitleTextLineItem.createViewHolder(parent);
+            case LineItem.ACTION_BUTTON_TYPE:
+                return ActionIconButtonLineItem.createViewHolder(parent);
             default:
                 throw new IllegalStateException("ViewType not supported: " + viewType);
         }
@@ -229,6 +259,6 @@ public class TypedPagedListAdapter extends RecyclerView.Adapter<ViewHolder>
 
     @Override
     public void setMaxItems(int maxItems) {
-        // no limit in this list.
+        // No limit in this list.
     }
 }
