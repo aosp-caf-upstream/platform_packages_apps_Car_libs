@@ -19,19 +19,26 @@ package com.android.car.media.common;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
 import android.media.MediaMetadata;
+import android.media.Rating;
 import android.media.session.MediaController;
+import android.media.session.MediaController.TransportControls;
 import android.media.session.MediaSession;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.media.session.PlaybackState.Actions;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.service.media.MediaBrowserService;
 import android.util.Log;
 
 import java.lang.annotation.Retention;
@@ -56,6 +63,10 @@ import java.util.stream.Collectors;
  */
 public class PlaybackModel {
     private static final String TAG = "PlaybackModel";
+
+    private static final String ACTION_SET_RATING =
+            "com.android.car.media.common.ACTION_SET_RATING";
+    private static final String EXTRA_SET_HEART = "com.android.car.media.common.EXTRA_SET_HEART";
 
     private final MediaSessionManager mMediaSessionManager;
     @Nullable
@@ -316,8 +327,33 @@ public class PlaybackModel {
      * @param extras additional data to send to the media source.
      */
     public void onCustomAction(String action, Bundle extras) {
+        if (mMediaController == null) return;
+        TransportControls cntrl = mMediaController.getTransportControls();
+
+        if (ACTION_SET_RATING.equals(action)) {
+            boolean setHeart = extras == null ? false : extras.getBoolean(EXTRA_SET_HEART, false);
+            cntrl.setRating(Rating.newHeartRating(setHeart));
+        } else {
+            cntrl.sendCustomAction(action, extras);
+        }
+    }
+
+    /**
+     * Starts playing a given media item. This id corresponds to {@link MediaItemMetadata#mId}.
+     */
+    public void onPlayItem(String mediaItemId) {
         if (mMediaController != null) {
-            mMediaController.getTransportControls().sendCustomAction(action, extras);
+            mMediaController.getTransportControls().playFromMediaId(mediaItemId, null);
+        }
+    }
+
+    /**
+     * Skips to a particular item in the media queue. This id is {@link MediaItemMetadata#mQueueId}
+     * of the items obtained through {@link #getQueue()}.
+     */
+    public void onSkipToQueueItem(long queueId) {
+        if (mMediaController != null) {
+            mMediaController.getTransportControls().skipToQueueItem(queueId);
         }
     }
 
@@ -388,9 +424,15 @@ public class PlaybackModel {
         if (state == null) {
             return ACTION_DISABLED;
         }
-        int stopAction = ((state.getActions() & PlaybackState.ACTION_PAUSE) != 0)
-                ? ACTION_PAUSE
-                : ACTION_STOP;
+
+        @Actions long actions = state.getActions();
+        int stopAction = ACTION_DISABLED;
+        if ((actions & (PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE)) != 0) {
+            stopAction = ACTION_PAUSE;
+        } else if ((actions & PlaybackState.ACTION_STOP) != 0) {
+            stopAction = ACTION_STOP;
+        }
+
         switch (state.getState()) {
             case PlaybackState.STATE_PLAYING:
             case PlaybackState.STATE_BUFFERING:
@@ -512,6 +554,9 @@ public class PlaybackModel {
      */
     @NonNull
     public List<MediaItemMetadata> getQueue() {
+        if (mMediaController == null) {
+            return new ArrayList<>();
+        }
         List<MediaSession.QueueItem> items = mMediaController.getQueue();
         if (items != null) {
             return items.stream()
@@ -528,8 +573,35 @@ public class PlaybackModel {
      * {@link PlaybackObserver#onPlaybackStateChanged()}.
      */
     public boolean hasQueue() {
+        if (mMediaController == null) {
+            return false;
+        }
         List<MediaSession.QueueItem> items = mMediaController.getQueue();
         return items != null && !items.isEmpty();
+    }
+
+    private @Nullable CustomPlaybackAction getRatingAction() {
+        PlaybackState playbackState = mMediaController.getPlaybackState();
+        if (playbackState == null) return null;
+
+        long stdActions = playbackState.getActions();
+        if ((stdActions & PlaybackState.ACTION_SET_RATING) == 0) return null;
+
+        int ratingType = mMediaController.getRatingType();
+        if (ratingType != Rating.RATING_HEART) return null;
+
+        MediaMetadata metadata = mMediaController.getMetadata();
+        boolean hasHeart = false;
+        if (metadata != null) {
+            Rating rating = metadata.getRating(MediaMetadata.METADATA_KEY_USER_RATING);
+            hasHeart = rating != null && rating.hasHeart();
+        }
+
+        int iconResource = hasHeart ? R.drawable.ic_star_filled : R.drawable.ic_star_empty;
+        Drawable icon = mContext.getResources().getDrawable(iconResource, null);
+        Bundle extras = new Bundle();
+        extras.putBoolean(EXTRA_SET_HEART, !hasHeart);
+        return new CustomPlaybackAction(icon, ACTION_SET_RATING, extras);
     }
 
     /**
@@ -539,11 +611,14 @@ public class PlaybackModel {
      */
     public List<CustomPlaybackAction> getCustomActions() {
         List<CustomPlaybackAction> actions = new ArrayList<>();
-        if (mMediaController == null || mMediaController.getPlaybackState() == null) {
-            return actions;
-        }
-        for (PlaybackState.CustomAction action : mMediaController.getPlaybackState()
-                .getCustomActions()) {
+        if (mMediaController == null) return actions;
+        PlaybackState playbackState = mMediaController.getPlaybackState();
+        if (playbackState == null) return actions;
+
+        CustomPlaybackAction ratingAction = getRatingAction();
+        if (ratingAction != null) actions.add(ratingAction);
+
+        for (PlaybackState.CustomAction action : playbackState.getCustomActions()) {
             Resources resources = getResourcesForPackage(mMediaController.getPackageName());
             if (resources == null) {
                 actions.add(null);
@@ -567,5 +642,31 @@ public class PlaybackModel {
             Log.e(TAG, "Unable to get resources for " + packageName);
             return null;
         }
+    }
+
+    /**
+     * @return a {@link ComponentName} corresponding to a {@link MediaBrowserService} in the
+     * media source, or null if the media source doesn't implement {@link MediaBrowserService}.
+     * A non-null result doesn't imply that this service is accessible. The consumer code should
+     * attempt to connect and handle rejections gracefully.
+     */
+    @Nullable
+    public ComponentName getMediaBrowseServiceComponent() {
+        if (getPackageName() == null) {
+            return null;
+        }
+        PackageManager packageManager = mContext.getPackageManager();
+        Intent intent = new Intent();
+        intent.setAction(MediaBrowserService.SERVICE_INTERFACE);
+        intent.setPackage(getPackageName());
+        List<ResolveInfo> resolveInfos = packageManager.queryIntentServices(intent,
+                PackageManager.GET_RESOLVED_FILTER);
+        if (resolveInfos == null || resolveInfos.isEmpty()) {
+            return null;
+        }
+        return new ComponentName(
+                getPackageName(),
+                resolveInfos.get(0).serviceInfo.name
+        );
     }
 }
