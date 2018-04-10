@@ -22,15 +22,16 @@ import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ImageButton;
 import android.widget.ProgressBar;
+
+import androidx.car.widget.ActionBar;
 
 import com.android.car.apps.common.ColorChecker;
 
 import java.util.ArrayList;
 import java.util.List;
-
-import androidx.car.widget.ActionBar;
 
 /**
  * Custom view that can be used to display playback controls. It accepts a {@link PlaybackModel}
@@ -60,7 +61,14 @@ public class PlaybackControls extends ActionBar {
             updateCustomActions();
             updateAccentColor();
         }
+
+        @Override
+        public void onMetadataChanged() {
+            updateCustomActions();  // rating might have changed
+        }
     };
+    private ColorStateList mIconsColor;
+
 
     /** Creates a {@link PlaybackControls} view */
     public PlaybackControls(Context context) {
@@ -108,7 +116,10 @@ public class PlaybackControls extends ActionBar {
         mPlayPauseStopImageView.setAction(PlayPauseStopImageView.ACTION_DISABLED);
         mPlayPauseStopImageView.setOnClickListener(this::onPlayPauseStopClicked);
 
-        mSkipPrevButton = createIconButton(mContext,
+        mIconsColor = context.getResources().getColorStateList(R.color.playback_control_color,
+                null);
+
+        mSkipPrevButton = createIconButton(mContext, mIconsColor,
                 context.getDrawable(R.drawable.ic_skip_previous));
         mSkipPrevButton.setVisibility(INVISIBLE);
         mSkipPrevButton.setOnClickListener(v -> {
@@ -116,7 +127,7 @@ public class PlaybackControls extends ActionBar {
                 mModel.onSkipPreviews();
             }
         });
-        mSkipNextButton = createIconButton(mContext,
+        mSkipNextButton = createIconButton(mContext, mIconsColor,
                 context.getDrawable(R.drawable.ic_skip_next));
         mSkipNextButton.setVisibility(INVISIBLE);
         mSkipNextButton.setOnClickListener(v -> {
@@ -125,13 +136,17 @@ public class PlaybackControls extends ActionBar {
             }
         });
 
+        ImageButton overflowButton = createIconButton(context, mIconsColor,
+                context.getDrawable(androidx.car.R.drawable.ic_overflow));
+
         setView(mPlayPauseStopImageContainer, ActionBar.SLOT_MAIN);
         setView(mSkipPrevButton, ActionBar.SLOT_LEFT);
         setView(mSkipNextButton, ActionBar.SLOT_RIGHT);
+        setExpandCollapseView(overflowButton);
     }
 
-    private ImageButton createIconButton(Context context, Drawable icon) {
-        ImageButton button = (ImageButton) inflate(context, R.layout.action_bar_button, null);
+    private ImageButton createIconButton(Context context, ColorStateList csl, Drawable icon) {
+        ImageButton button = new ImageButton(context, null, 0, R.style.PlaybackControl);
         button.setImageDrawable(icon);
         return button;
     }
@@ -171,7 +186,7 @@ public class PlaybackControls extends ActionBar {
 
         if (customActions.size() > mCustomActionButtons.size()) {
             for (int i = mCustomActionButtons.size(); i < customActions.size(); i++) {
-                mCustomActionButtons.add(createIconButton(getContext(), null));
+                mCustomActionButtons.add(createIconButton(getContext(), mIconsColor, null));
             }
             setViews(mCustomActionButtons.toArray(new View[mCustomActionButtons.size()]));
             Log.i(TAG, "Increasing buttons array: " + customActions.size());
@@ -187,8 +202,11 @@ public class PlaybackControls extends ActionBar {
         for (int pos = 0; pos < mCustomActionButtons.size(); pos++) {
             ImageButton button = mCustomActionButtons.get(pos);
             if (customActions.size() > pos) {
+                CustomPlaybackAction action = customActions.get(pos);
                 button.setVisibility(VISIBLE);
-                button.setImageDrawable(customActions.get(pos).mIcon);
+                button.setImageDrawable(action.mIcon);
+                button.setOnClickListener(view ->
+                        mModel.onCustomAction(action.mAction, action.mExtras));
             } else {
                 button.setVisibility(INVISIBLE);
             }
@@ -213,5 +231,24 @@ public class PlaybackControls extends ActionBar {
                 Log.i(TAG, "Play/Pause/Stop clicked on invalid state");
                 break;
         }
+    }
+
+    /**
+     * Collapses the playback controls if they were expanded.
+     */
+    public void close() {
+        // TODO(b/77242566): This will be implemented once the corresponding change is published in
+        // Car Support Library.
+    }
+
+    /**
+     * Defines the root {@link ViewGroup} used to animate the expand/collapse layout transitions.
+     * If this method is not used, only this view will be animated.
+     * If other elements of the screen have a layout relative to this view, their container
+     * layout should be passed to this method.
+     */
+    public void setAnimationViewGroup(ViewGroup animationViewGroup) {
+        // TODO(b/77242566): This will be implemented once the corresponding change is published in
+        // Car Support Library.
     }
 }
