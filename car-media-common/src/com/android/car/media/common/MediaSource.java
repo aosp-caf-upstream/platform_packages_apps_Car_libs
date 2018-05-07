@@ -27,7 +27,18 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
+import android.graphics.Rect;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
 import android.media.browse.MediaBrowser;
+import android.media.session.MediaController;
+import android.media.session.MediaSession;
+import android.os.Handler;
 import android.service.media.MediaBrowserService;
 import android.support.annotation.ColorInt;
 import android.util.Log;
@@ -36,6 +47,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * This represents a source of media content. It provides convenient methods to access media source
@@ -59,8 +71,10 @@ public class MediaSource {
     @Nullable
     private final MediaBrowser mBrowser;
     private final Context mContext;
+    private final Handler mHandler = new Handler();
     private List<Observer> mObservers = new ArrayList<>();
     private CharSequence mName;
+    private String mRootNode;
     private @ColorInt int mPrimaryColor;
     private @ColorInt int mAccentColor;
     private @ColorInt int mPrimaryColorDark;
@@ -68,29 +82,40 @@ public class MediaSource {
     /**
      * An observer of this media source.
      */
-    public interface Observer {
+    public abstract static class Observer {
         /**
          * This method is called if a successful connection to the {@link MediaBrowserService} is
          * made for this source. A connection is initiated as soon as there is at least one
          * {@link Observer} subscribed by using {@link MediaSource#subscribe(Observer)}.
          *
-         * @param mediaBrowser a connected {@link MediaBrowser}, or NULL if connection was
-         *                     unsuccessful (for example: if the media source rejects the
-         *                     connection)
+         * @param success true if the connection was successful or false otherwise.
          */
-        void onBrowseConnected(@Nullable MediaBrowser mediaBrowser);
+        protected void onBrowseConnected(boolean success) {};
 
         /**
          * This method is called if the connection to the {@link MediaBrowserService} is lost.
          */
-        void onBrowseDisconnected();
+        protected void onBrowseDisconnected() {};
+    }
+
+    /**
+     * A subscription to a collection of items
+     */
+    public interface ItemsSubscription {
+        /**
+         * This method is called whenever media items are loaded or updated.
+         *
+         * @param parentId identifier of the items parent.
+         * @param items items loaded, or null if there was an error trying to load them.
+         */
+        void onChildrenLoaded(String parentId, @Nullable List<MediaItemMetadata> items);
     }
 
     private final MediaBrowser.ConnectionCallback mConnectionCallback =
             new MediaBrowser.ConnectionCallback() {
                 @Override
                 public void onConnected() {
-                    MediaSource.this.notify(observer -> observer.onBrowseConnected(mBrowser));
+                    MediaSource.this.notify(observer -> observer.onBrowseConnected(true));
                 }
 
                 @Override
@@ -100,7 +125,7 @@ public class MediaSource {
 
                 @Override
                 public void onConnectionFailed() {
-                    MediaSource.this.notify(observer -> observer.onBrowseConnected(null));
+                    MediaSource.this.notify(observer -> observer.onBrowseConnected(false));
                 }
             };
 
@@ -163,7 +188,7 @@ public class MediaSource {
                 // this exception, but there is no way to know without trying.
             }
         } else {
-            observer.onBrowseConnected(mBrowser);
+            observer.onBrowseConnected(true);
         }
         return true;
     }
@@ -177,8 +202,69 @@ public class MediaSource {
             // TODO(b/77640010): Review MediaBrowse disconnection.
             // Some media sources are not responding correctly to MediaBrowser#disconnect(). We
             // are keeping the connection going.
-            // mBrowser.disconnect();
+            //   mBrowser.disconnect();
         }
+    }
+
+    /**
+     * Subscribes to changes on the list of media item children of the given parent.
+     *
+     * @param parentId parent of the children to load, or null to indicate children of the root
+     *                 node.
+     * @param callback callback used to provide updates on the subscribed node.
+     * @throws IllegalStateException if browsing is not available or it is not connected.
+     */
+    public void subscribeChildren(@Nullable String parentId,
+            ItemsSubscription callback) {
+        if (mBrowser == null) {
+            throw new IllegalStateException("Browsing is not available for this source: "
+                    + getName());
+        }
+        if (mRootNode == null && !mBrowser.isConnected()) {
+            throw new IllegalStateException("Subscribing to the root node can only be done while "
+                    + "connected: " + getName());
+        }
+        mRootNode = mBrowser.getRoot();
+        mBrowser.subscribe(parentId != null ? parentId : mRootNode,
+                wrapCallback(callback));
+    }
+
+    /**
+     * Unsubscribes to changes on the list of media items children of the given parent
+     *
+     * @param parentId parent to unsubscribe, or null to unsubscribe from the root node.
+     * @throws IllegalStateException if browsing is not available or it is not connected.
+     */
+    public void unsubscribeChildren(@Nullable String parentId) {
+        // If we are not connected
+        if (mBrowser == null) {
+            throw new IllegalStateException("Browsing is not available for this source: "
+                    + getName());
+        }
+        if (parentId == null && mRootNode == null) {
+            // If we are trying to unsubscribe from root, but we haven't determine it's Id, then
+            // there is nothing we can do.
+            return;
+        }
+        mBrowser.unsubscribe(parentId != null ? parentId : mRootNode);
+    }
+
+    private MediaBrowser.SubscriptionCallback wrapCallback(ItemsSubscription subscription) {
+        return new MediaBrowser.SubscriptionCallback() {
+            @Override
+            public void onChildrenLoaded(String parentId,
+                    List<MediaBrowser.MediaItem> children) {
+                List<MediaItemMetadata> items = children.stream()
+                        .map(child -> new MediaItemMetadata(child))
+                        .collect(Collectors.toList());
+                subscription.onChildrenLoaded(parentId, items);
+            }
+
+            @Override
+            public void onError(String parentId) {
+                subscription.onChildrenLoaded(parentId, null);
+            }
+        };
     }
 
     private void extractComponentInfo(@NonNull String packageName,
@@ -258,9 +344,12 @@ public class MediaSource {
     }
 
     private void notify(Consumer<Observer> notification) {
-        for (Observer observer : mObservers) {
-            notification.accept(observer);
-        }
+        mHandler.post(() -> {
+            List<Observer> observers = new ArrayList<>(mObservers);
+            for (Observer observer : observers) {
+                notification.accept(observer);
+            }
+        });
     }
 
     /**
@@ -268,6 +357,13 @@ public class MediaSource {
      */
     public CharSequence getName() {
         return mName;
+    }
+
+    /**
+     * @return the package name that identifies this media source.
+     */
+    public String getPackageName() {
+        return mPackageName;
     }
 
     /**
@@ -283,6 +379,87 @@ public class MediaSource {
         }
     }
 
+    /**
+     * @return a {@link PlaybackModel} that allows controlling this media source. This method
+     * should only be used if this {@link MediaSource} is connected.
+     * @see #subscribe(Observer)
+     */
+    @Nullable
+    public PlaybackModel getPlaybackModel() {
+        if (mBrowser == null) {
+            return null;
+        }
+
+        MediaSession.Token token = mBrowser.getSessionToken();
+        MediaController controller = new MediaController(mContext, token);
+        PlaybackModel playbackModel = new PlaybackModel(mContext);
+        playbackModel.setMediaController(controller);
+        return playbackModel;
+    }
+
+    /**
+     * Returns this media source's icon as a {@link Drawable}
+     */
+    public Drawable getPackageIcon() {
+        try {
+            return mContext.getPackageManager().getApplicationIcon(getPackageName());
+        } catch (PackageManager.NameNotFoundException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Returns this media source's icon cropped to a circle.
+     */
+    public Bitmap getRoundPackageIcon() {
+        Drawable packageIcon = getPackageIcon();
+        return packageIcon != null
+                ? getRoundCroppedBitmap(drawableToBitmap(getPackageIcon()))
+                : null;
+    }
+
+    private Bitmap drawableToBitmap(Drawable drawable) {
+        Bitmap bitmap = null;
+
+        if (drawable instanceof BitmapDrawable) {
+            BitmapDrawable bitmapDrawable = (BitmapDrawable) drawable;
+            if (bitmapDrawable.getBitmap() != null) {
+                return bitmapDrawable.getBitmap();
+            }
+        }
+
+        if (drawable.getIntrinsicWidth() <= 0 || drawable.getIntrinsicHeight() <= 0) {
+            bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+        } else {
+            bitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(),
+                    drawable.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+        }
+
+        Canvas canvas = new Canvas(bitmap);
+        drawable.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+        drawable.draw(canvas);
+        return bitmap;
+    }
+
+    private Bitmap getRoundCroppedBitmap(Bitmap bitmap) {
+        Bitmap output = Bitmap.createBitmap(bitmap.getWidth(), bitmap.getHeight(),
+                Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(output);
+
+        final int color = 0xff424242;
+        final Paint paint = new Paint();
+        final Rect rect = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
+
+        paint.setAntiAlias(true);
+        canvas.drawARGB(0, 0, 0, 0);
+        paint.setColor(color);
+        canvas.drawCircle(bitmap.getWidth() / 2, bitmap.getHeight() / 2,
+                bitmap.getWidth() / 2f, paint);
+        paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_IN));
+        canvas.drawBitmap(bitmap, rect, rect, paint);
+        return output;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -290,6 +467,11 @@ public class MediaSource {
         MediaSource that = (MediaSource) o;
         return Objects.equals(mPackageName, that.mPackageName)
                 && Objects.equals(mBrowseServiceClassName, that.mBrowseServiceClassName);
+    }
+
+    /** @return the current media browser. This media browser might not be connected yet. */
+    public MediaBrowser getMediaBrowser() {
+        return mBrowser;
     }
 
     @Override

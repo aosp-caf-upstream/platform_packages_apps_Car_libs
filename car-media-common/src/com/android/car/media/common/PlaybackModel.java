@@ -32,21 +32,21 @@ import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
 import android.media.session.PlaybackState.Actions;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.SystemClock;
 import android.util.Log;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
  * View-model for playback UI components. This abstractions provides a simplified view of
  * {@link MediaSession} and {@link MediaSessionManager} data and events.
+ *
  * <p>
  * It automatically determines the foreground media app (the one that would normally
  * receive playback events) and exposes metadata and events from such app, or when a different app
@@ -63,12 +63,14 @@ public class PlaybackModel {
     private static final String EXTRA_SET_HEART = "com.android.car.media.common.EXTRA_SET_HEART";
 
     private final MediaSessionManager mMediaSessionManager;
+    private final Handler mHandler = new Handler();
     @Nullable
     private MediaController mMediaController;
     private Context mContext;
     private List<PlaybackObserver> mObservers = new ArrayList<>();
     private final MediaSessionUpdater mMediaSessionUpdater = new MediaSessionUpdater();
     private MediaSource mMediaSource;
+    private boolean mIsStarted;
 
     /**
      * Temporary work-around to bug b/76017849.
@@ -79,58 +81,50 @@ public class PlaybackModel {
      * cheap operation.
      */
     private class MediaSessionUpdater {
-        private Map<String, MediaController> mControllersByPackageName = new HashMap<>();
+        private List<MediaController> mControllers = new ArrayList<>();
 
         private MediaController.Callback mCallback = new MediaController.Callback() {
             @Override
             public void onPlaybackStateChanged(PlaybackState state) {
                 selectMediaController(mMediaSessionManager.getActiveSessions(null));
             }
+
+            @Override
+            public void onSessionDestroyed() {
+                selectMediaController(mMediaSessionManager.getActiveSessions(null));
+            }
         };
 
         void setControllersByPackageName(List<MediaController> newControllers) {
-            Map<String, MediaController> newControllersMap = new HashMap<>();
-            for (MediaController newController : newControllers) {
-                if (!mControllersByPackageName.containsKey(newController.getPackageName())) {
-                    if (Log.isLoggable(TAG, Log.DEBUG)) {
-                        Log.d(TAG, "New controller detected: "
-                                + newController.getPackageName());
-                    }
-                    newController.registerCallback(mCallback);
-                } else {
-                    mControllersByPackageName.remove(newController.getPackageName());
-                }
-                newControllersMap.put(newController.getPackageName(), newController);
-            }
-            for (MediaController oldController : mControllersByPackageName.values()) {
-                if (Log.isLoggable(TAG, Log.DEBUG)) {
-                    Log.d(TAG, "Removed controller detected: "
-                            + oldController.getPackageName());
-                }
+            for (MediaController oldController : mControllers) {
                 oldController.unregisterCallback(mCallback);
             }
-            mControllersByPackageName = newControllersMap;
+            for (MediaController newController : newControllers) {
+                newController.registerCallback(mCallback);
+            }
+            mControllers.clear();
+            mControllers.addAll(newControllers);
         }
     }
 
     /**
      * An observer of this model
      */
-    public interface PlaybackObserver {
+    public abstract static class PlaybackObserver {
         /**
          * Called whenever the playback state of the current media item changes.
          */
-        void onPlaybackStateChanged();
+        protected void onPlaybackStateChanged() {};
 
         /**
          * Called when the top source media app changes.
          */
-        void onSourceChanged();
+        protected void onSourceChanged() {};
 
         /**
          * Called when the media item being played changes.
          */
-        void onMetadataChanged();
+        protected void onMetadataChanged() {};
     }
 
     private MediaController.Callback mCallback = new MediaController.Callback() {
@@ -155,7 +149,7 @@ public class PlaybackModel {
             this::selectMediaController;
 
     /**
-     * Creates a {@link PlaybackModel}. By default this instance is going to be inactive until
+     * Creates a {@link PlaybackModel}. This instance is going to be inactive until
      * {@link #start()} method is invoked.
      */
     public PlaybackModel(Context context) {
@@ -163,10 +157,93 @@ public class PlaybackModel {
         mMediaSessionManager = mContext.getSystemService(MediaSessionManager.class);
     }
 
+    /**
+     * Sets the {@link MediaController} wrapped by this model.
+     */
+    public void setMediaController(MediaController controller) {
+        changeMediaController(controller);
+    }
+
+    /**
+     * Selects one of the provided controllers as the "currently playing" one.
+     */
     private void selectMediaController(List<MediaController> controllers) {
-        changeMediaController(controllers != null && controllers.size() > 0 ? controllers.get(0) :
-                null);
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
+            dump("Selecting a media controller from: ", controllers);
+        }
+        changeMediaController(getTopMostController(controllers));
         mMediaSessionUpdater.setControllersByPackageName(controllers);
+    }
+
+    private void dump(String title, List<MediaController> controllers) {
+        Log.d(TAG, title + " (total: " + controllers.size() + ")");
+        for (MediaController controller : controllers) {
+            String stateName = getStateName(controller.getPlaybackState() != null
+                    ? controller.getPlaybackState().getState()
+                    : PlaybackState.STATE_NONE);
+            Log.d(TAG, String.format("\t%s: %s",
+                    controller.getPackageName(),
+                    stateName));
+        }
+    }
+
+    private String getStateName(@PlaybackState.State int state) {
+        switch (state) {
+            case PlaybackState.STATE_NONE:
+                return "NONE";
+            case PlaybackState.STATE_STOPPED:
+                return "STOPPED";
+            case PlaybackState.STATE_PAUSED:
+                return "PAUSED";
+            case PlaybackState.STATE_PLAYING:
+                return "PLAYING";
+            case PlaybackState.STATE_FAST_FORWARDING:
+                return "FORWARDING";
+            case PlaybackState.STATE_REWINDING:
+                return "REWINDING";
+            case PlaybackState.STATE_BUFFERING:
+                return "BUFFERING";
+            case PlaybackState.STATE_ERROR:
+                return "ERROR";
+            case PlaybackState.STATE_CONNECTING:
+                return "CONNECTING";
+            case PlaybackState.STATE_SKIPPING_TO_PREVIOUS:
+                return "SKIPPING_TO_PREVIOUS";
+            case PlaybackState.STATE_SKIPPING_TO_NEXT:
+                return "SKIPPING_TO_NEXT";
+            case PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM:
+                return "SKIPPING_TO_QUEUE_ITEM";
+            default:
+                return "UNKNOWN";
+        }
+    }
+
+    /**
+     * @return the controller most likely to be the currently active one, out of the list of
+     * active controllers repoted by {@link MediaSessionManager}. It does so by picking the first
+     * one (in order of priority) which an active state as reported by
+     * {@link MediaController#getPlaybackState()}
+     */
+    private MediaController getTopMostController(List<MediaController> controllers) {
+        if (controllers != null && controllers.size() > 0) {
+            for (MediaController candidate : controllers) {
+                @PlaybackState.State int state = candidate.getPlaybackState() != null
+                        ? candidate.getPlaybackState().getState()
+                        : PlaybackState.STATE_NONE;
+                if (state == PlaybackState.STATE_BUFFERING
+                        || state == PlaybackState.STATE_CONNECTING
+                        || state == PlaybackState.STATE_FAST_FORWARDING
+                        || state == PlaybackState.STATE_PLAYING
+                        || state == PlaybackState.STATE_REWINDING
+                        || state == PlaybackState.STATE_SKIPPING_TO_NEXT
+                        || state == PlaybackState.STATE_SKIPPING_TO_PREVIOUS
+                        || state == PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM) {
+                    return candidate;
+                }
+            }
+            return controllers.get(0);
+        }
+        return null;
     }
 
     private void changeMediaController(MediaController mediaController) {
@@ -174,7 +251,9 @@ public class PlaybackModel {
             Log.d(TAG, "New media controller: " + (mediaController != null
                     ? mediaController.getPackageName() : null));
         }
-        if (mediaController == mMediaController) {
+        if ((mediaController == null && mMediaController == null)
+                || (mediaController != null && mMediaController != null
+                && mediaController.getPackageName().equals(mMediaController.getPackageName()))) {
             // If no change, do nothing.
             return;
         }
@@ -198,9 +277,10 @@ public class PlaybackModel {
      * Calling this method might cause an immediate {@link PlaybackObserver#onSourceChanged()}
      * event in case the current media source is different than the last known one.
      */
-    public void start() {
+    private void start() {
         mMediaSessionManager.addOnActiveSessionsChangedListener(mSessionChangeListener, null);
         selectMediaController(mMediaSessionManager.getActiveSessions(null));
+        mIsStarted = true;
     }
 
     /**
@@ -208,16 +288,20 @@ public class PlaybackModel {
      * immediate {@link PlaybackObserver#onSourceChanged()} event if a media source was already
      * connected.
      */
-    public void stop() {
+    private void stop() {
         mMediaSessionUpdater.setControllersByPackageName(new ArrayList<>());
         mMediaSessionManager.removeOnActiveSessionsChangedListener(mSessionChangeListener);
         changeMediaController(null);
+        mIsStarted = false;
     }
 
     private void notify(Consumer<PlaybackObserver> notification) {
-        for (PlaybackObserver observer : mObservers) {
-            notification.accept(observer);
-        }
+        mHandler.post(() -> {
+            List<PlaybackObserver> observers = new ArrayList<>(mObservers);
+            for (PlaybackObserver observer : observers) {
+                notification.accept(observer);
+            }
+        });
     }
 
     /**
@@ -227,7 +311,15 @@ public class PlaybackModel {
      */
     @Nullable
     public MediaSource getMediaSource() {
-        return mMediaSource;
+        if (mIsStarted) {
+            return mMediaSource;
+        }
+
+        MediaController controller = getTopMostController(mMediaSessionManager
+                .getActiveSessions(null));
+        return controller != null
+                ? new MediaSource(mContext, controller.getPackageName())
+                : null;
     }
 
     /**
@@ -443,18 +535,29 @@ public class PlaybackModel {
     }
 
     /**
-     * Registers an observer to be notified of media events.
+     * Registers an observer to be notified of media events. If the model is not started yet it
+     * will start right away. If the model was already started, the observer will receive an
+     * immediate {@link PlaybackObserver#onSourceChanged()} event.
      */
     public void registerObserver(PlaybackObserver observer) {
         mObservers.add(observer);
+        if (!mIsStarted) {
+            start();
+        } else {
+            observer.onSourceChanged();
+        }
     }
 
     /**
      * Unregisters an observer previously registered using
-     * {@link #registerObserver(PlaybackObserver)}
+     * {@link #registerObserver(PlaybackObserver)}. There are no other observers the model will
+     * stop tracking changes right away.
      */
     public void unregisterObserver(PlaybackObserver observer) {
         mObservers.remove(observer);
+        if (mObservers.isEmpty() && mIsStarted) {
+            stop();
+        }
     }
 
     /**
@@ -530,6 +633,16 @@ public class PlaybackModel {
             return null;
         }
         return mMediaController.getQueueTitle();
+    }
+
+    /**
+     * @return queue id of the currently playing queue item, or
+     * {@link MediaSession.QueueItem#UNKNOWN_ID} if none of the items is currently playing.
+     */
+    public long getActiveQueueItemId() {
+        PlaybackState playbackState = mMediaController.getPlaybackState();
+        if (playbackState == null) return MediaSession.QueueItem.UNKNOWN_ID;
+        return playbackState.getActiveQueueItemId();
     }
 
     /**
